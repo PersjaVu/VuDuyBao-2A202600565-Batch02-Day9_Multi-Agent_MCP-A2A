@@ -24,6 +24,23 @@ from a2a.types import (
 
 logger = logging.getLogger(__name__)
 
+# Module-level cache: endpoint URL → AgentCard
+# Avoids refetching /.well-known/agent.json on every delegation call
+_card_cache: dict[str, AgentCard] = {}
+
+
+async def _get_agent_card(http_client: httpx.AsyncClient, endpoint: str) -> AgentCard:
+    """Fetch and cache the agent card for a given endpoint."""
+    if endpoint not in _card_cache:
+        card_url = f"{endpoint}/.well-known/agent.json"
+        card_resp = await http_client.get(card_url)
+        card_resp.raise_for_status()
+        _card_cache[endpoint] = AgentCard.model_validate(card_resp.json())
+        logger.debug("Agent card cached for %s", endpoint)
+    else:
+        logger.debug("Agent card cache HIT for %s", endpoint)
+    return _card_cache[endpoint]
+
 
 async def delegate(
     endpoint: str,
@@ -45,11 +62,8 @@ async def delegate(
         The agent's text response, or an empty string if none could be extracted.
     """
     async with httpx.AsyncClient(timeout=300.0) as http_client:
-        # Fetch agent card
-        card_url = f"{endpoint}/.well-known/agent.json"
-        card_resp = await http_client.get(card_url)
-        card_resp.raise_for_status()
-        agent_card = AgentCard.model_validate(card_resp.json())
+        # Fetch agent card (cached after first call)
+        agent_card = await _get_agent_card(http_client, endpoint)
 
         # Build deprecated (legacy) A2AClient — straightforward for send_message
         client = A2AClient(httpx_client=http_client, agent_card=agent_card)
