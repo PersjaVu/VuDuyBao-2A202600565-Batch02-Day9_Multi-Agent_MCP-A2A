@@ -5,9 +5,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from uuid import uuid4
 
 import uvicorn
 from dotenv import load_dotenv
+from fastapi import Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from langchain_core.messages import HumanMessage, AIMessage
 
 load_dotenv()
 
@@ -18,6 +23,7 @@ from a2a.types import AgentCapabilities, AgentCard, AgentSkill
 
 from common.registry_client import register
 from customer_agent.agent_executor import CustomerAgentExecutor
+from customer_agent.graph import build_graph
 
 logging.basicConfig(
     level=logging.INFO,
@@ -91,6 +97,72 @@ async def main() -> None:
         http_handler=request_handler,
     )
     app = app_builder.build()
+
+    # CORS — allow requests from Vite dev server
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @app.post("/messages")
+    async def chat_endpoint(request: Request) -> JSONResponse:
+        """Simple REST endpoint for the frontend demo."""
+        try:
+            body = await request.json()
+            logger.info("REST /messages body: %s", body)
+            # Accept common formats: {"content"}, {"question"}, {"message"}, {"text"},
+            # or ChatGPT-style {"messages": [{"role":"user","content":"..."}]}
+            question = (
+                body.get("content")
+                or body.get("question")
+                or body.get("message")
+                or body.get("text")
+                or body.get("input")
+                or body.get("query")
+            )
+            # ChatGPT-style: {"messages": [...]}
+            if not question and isinstance(body.get("messages"), list):
+                for m in reversed(body["messages"]):
+                    if m.get("role") == "user" and m.get("content"):
+                        question = m["content"]
+                        break
+            if not question:
+                return JSONResponse(
+                    {"error": "No question found", "received": body},
+                    status_code=400,
+                )
+
+            trace_id = str(uuid4())
+            context_id = str(uuid4())
+
+            graph = build_graph(trace_id=trace_id, context_id=context_id, depth=0)
+            result = await graph.ainvoke(
+                {"messages": [HumanMessage(content=question)]},
+                config={"configurable": {"thread_id": context_id}},
+            )
+
+            answer = ""
+            for msg in reversed(result.get("messages", [])):
+                if isinstance(msg, AIMessage) and msg.content:
+                    content = msg.content
+                    # Gemini returns content as list of dicts
+                    if isinstance(content, list):
+                        parts = [
+                            p.get("text", "") if isinstance(p, dict) else str(p)
+                            for p in content
+                        ]
+                        content = "".join(parts)
+                    if content and content.strip():
+                        answer = content
+                        break
+
+            return JSONResponse({"role": "assistant", "content": answer})
+
+        except Exception as exc:
+            logger.exception("REST /messages error: %s", exc)
+            return JSONResponse({"error": str(exc)}, status_code=500)
 
     config = uvicorn.Config(app, host="0.0.0.0", port=PORT, log_level="info")
     server = uvicorn.Server(config)

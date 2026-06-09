@@ -1,60 +1,127 @@
 import './style.css'
-import javascriptLogo from './assets/javascript.svg'
-import viteLogo from './assets/vite.svg'
-import heroImg from './assets/hero.png'
-import { setupCounter } from './counter.js'
 
+// ── A2A client ──────────────────────────────────────────────────────────────
+const BACKEND = '/messages'   // Vite proxy → http://localhost:10100/
+
+async function sendToAgent(userText) {
+  const messageId = crypto.randomUUID()
+  const requestId = crypto.randomUUID()
+
+  const body = {
+    id: requestId,
+    jsonrpc: '2.0',
+    method: 'message/send',
+    params: {
+      message: {
+        kind: 'message',
+        messageId,
+        role: 'user',
+        parts: [{ kind: 'text', text: userText }],
+      },
+    },
+  }
+
+  const res = await fetch(BACKEND, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
+  if (!res.ok) {
+    const err = await res.text()
+    throw new Error(`HTTP ${res.status}: ${err}`)
+  }
+
+  const data = await res.json()
+
+  // Extract text from A2A response
+  // Shape: result.artifacts[].parts[].text  OR  result.parts[].text
+  const result = data?.result
+  if (!result) throw new Error('No result in response')
+
+  const parts =
+    result?.artifacts?.flatMap(a => a.parts ?? []) ??
+    result?.parts ??
+    []
+
+  const text = parts
+    .map(p => p?.text ?? p?.root?.text ?? '')
+    .filter(Boolean)
+    .join('\n')
+
+  return text || '(No text response)'
+}
+
+// ── UI ───────────────────────────────────────────────────────────────────────
 document.querySelector('#app').innerHTML = `
-<section id="center">
-  <div class="hero">
-    <img src="${heroImg}" class="base" width="170" height="179">
-    <img src="${javascriptLogo}" class="framework" alt="JavaScript logo"/>
-    <img src="${viteLogo}" class="vite" alt="Vite logo" />
-  </div>
-  <div>
-    <h1>Get started</h1>
-    <p>Edit <code>src/main.js</code> and save to test <code>HMR</code></p>
-  </div>
-  <button id="counter" type="button" class="counter"></button>
-</section>
+<div class="chat-wrap">
+  <header class="chat-header">
+    <span class="logo">⚖️</span>
+    <div>
+      <h1>Legal Multi-Agent System</h1>
+      <p>Powered by LangGraph + A2A Protocol</p>
+    </div>
+  </header>
 
-<div class="ticks"></div>
-
-<section id="next-steps">
-  <div id="docs">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#documentation-icon"></use></svg>
-    <h2>Documentation</h2>
-    <p>Your questions, answered</p>
-    <ul>
-      <li>
-        <a href="https://vite.dev/" target="_blank">
-          <img class="logo" src="${viteLogo}" alt="" />
-          Explore Vite
-        </a>
-      </li>
-      <li>
-        <a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript" target="_blank">
-          <img class="button-icon" src="${javascriptLogo}" alt="">
-          Learn more
-        </a>
-      </li>
-    </ul>
+  <div class="chat-messages" id="messages">
+    <div class="msg assistant">
+      <div class="bubble">Xin chào! Tôi là Legal Assistant. Hỏi bất kỳ câu hỏi pháp lý nào — tôi sẽ điều phối các chuyên gia Tax, Compliance và Contract Law.</div>
+    </div>
   </div>
-  <div id="social">
-    <svg class="icon" role="presentation" aria-hidden="true"><use href="/icons.svg#social-icon"></use></svg>
-    <h2>Connect with us</h2>
-    <p>Join the Vite community</p>
-    <ul>
-      <li><a href="https://github.com/vitejs/vite" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#github-icon"></use></svg>GitHub</a></li>
-      <li><a href="https://chat.vite.dev/" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#discord-icon"></use></svg>Discord</a></li>
-      <li><a href="https://x.com/vite_js" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#x-icon"></use></svg>X.com</a></li>
-      <li><a href="https://bsky.app/profile/vite.dev" target="_blank"><svg class="button-icon" role="presentation" aria-hidden="true"><use href="/icons.svg#bluesky-icon"></use></svg>Bluesky</a></li>
-    </ul>
-  </div>
-</section>
 
-<div class="ticks"></div>
-<section id="spacer"></section>
+  <form class="chat-input-row" id="chat-form">
+    <input
+      id="user-input"
+      type="text"
+      placeholder="Nhập câu hỏi pháp lý..."
+      autocomplete="off"
+    />
+    <button type="submit" id="send-btn">Gửi</button>
+  </form>
+</div>
 `
 
-setupCounter(document.querySelector('#counter'))
+const messagesEl = document.getElementById('messages')
+const form = document.getElementById('chat-form')
+const input = document.getElementById('user-input')
+const sendBtn = document.getElementById('send-btn')
+
+function addMessage(role, text) {
+  const div = document.createElement('div')
+  div.className = `msg ${role}`
+  div.innerHTML = `<div class="bubble">${text.replace(/\n/g, '<br>')}</div>`
+  messagesEl.appendChild(div)
+  messagesEl.scrollTop = messagesEl.scrollHeight
+  return div
+}
+
+function setLoading(on) {
+  sendBtn.disabled = on
+  input.disabled = on
+  sendBtn.textContent = on ? '...' : 'Gửi'
+}
+
+form.addEventListener('submit', async (e) => {
+  e.preventDefault()
+  const text = input.value.trim()
+  if (!text) return
+
+  input.value = ''
+  addMessage('user', text)
+
+  const loadingEl = addMessage('assistant', '<span class="typing">Đang phân tích <span class="dots">...</span></span>')
+  setLoading(true)
+
+  try {
+    const answer = await sendToAgent(text)
+    loadingEl.querySelector('.bubble').innerHTML = answer.replace(/\n/g, '<br>')
+  } catch (err) {
+    loadingEl.querySelector('.bubble').innerHTML =
+      `<span class="error">Lỗi kết nối tới Python Backend: ${err.message}<br>Bạn đã chạy ./start_all.sh chưa?</span>`
+  } finally {
+    setLoading(false)
+    input.focus()
+  }
+})
+
+input.focus()

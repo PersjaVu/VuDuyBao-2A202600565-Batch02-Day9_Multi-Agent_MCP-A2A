@@ -5,7 +5,8 @@ export default defineConfig({
     proxy: {
       '/messages': {
         target: 'http://localhost:10100',
-        changeOrigin: true
+        changeOrigin: true,
+        rewrite: () => '/'
       }
     }
   }
